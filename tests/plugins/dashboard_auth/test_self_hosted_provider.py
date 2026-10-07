@@ -770,6 +770,27 @@ class TestPluginRegister:
         assert oidc_plugin.LAST_SKIP_REASON == ""
 
 
+    def test_configured_offline_login_keeps_pkce(self, patch_config):
+        patch_config({"self_hosted": {
+            "issuer": _ISSUER, "client_id": _CLIENT_ID,
+            "authorization_params": {
+                "access_type": "offline", "prompt": "consent", "state": "forged",
+            },
+        }})
+        ctx = MagicMock()
+        oidc_plugin.register(ctx)
+        provider = ctx.register_dashboard_auth_provider.call_args.args[0]
+        provider._discovery = dict(_DISCOVERY_DOC)
+        provider._discovery_fetched_at = time.time()
+        login = provider.start_login(redirect_uri="https://hermes.example/auth/callback")
+        params = urllib.parse.parse_qs(urllib.parse.urlparse(login.redirect_url).query)
+        cookie_state = dict(seg.split("=", 1) for seg in login.cookie_payload["hermes_session_pkce"].split(";"))["state"]
+        assert params["access_type"] == ["offline"]
+        assert params["prompt"] == ["consent"]
+        assert params["state"] == [cookie_state]
+        assert cookie_state != "forged"
+        assert params["code_challenge_method"] == ["S256"]
+
     def test_env_overrides_config(self, patch_config, monkeypatch):
         patch_config(
             {

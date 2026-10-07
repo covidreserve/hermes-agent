@@ -17,6 +17,7 @@ import logging
 import threading
 import time
 import urllib.parse
+from dataclasses import replace
 from typing import Any, Dict, Optional
 
 import httpx
@@ -90,6 +91,7 @@ class SelfHostedOIDCProvider(JwtOAuthProvider):
     def __init__(
         self, *, issuer: str, client_id: str, scopes: str = _DEFAULT_SCOPES, client_secret: str = "",
         id_token_leeway: float = DEFAULT_TOKEN_LEEWAY_SECONDS,
+        authorization_params: Dict[str, str] | None = None,
     ) -> None:
         if not issuer:
             raise ValueError("issuer is required")
@@ -101,6 +103,12 @@ class SelfHostedOIDCProvider(JwtOAuthProvider):
         _require_https_or_loopback(self._issuer, field="issuer")
         self._client_id = client_id
         self._scopes = scopes.strip() or _DEFAULT_SCOPES
+        # Only permit optional consent/offline hints; core state, PKCE and redirect
+        # parameters must remain owned by pkce_login_start.
+        self._authorization_params = {
+            key: value for key, value in (authorization_params if isinstance(authorization_params, dict) else {}).items()
+            if key in ("access_type", "prompt") and isinstance(value, str) and 0 < len(value) <= 128
+        }
         # Clock-skew tolerance (seconds) for the ID token's exp/nbf/iat claims;
         # the default absorbs unsynced-IDP skew (#47815), 0 restores strict mode.
         self._id_token_leeway = parse_leeway(id_token_leeway)
@@ -118,8 +126,11 @@ class SelfHostedOIDCProvider(JwtOAuthProvider):
         # Validate the redirect before discovery so a bad redirect_uri surfaces even when the IDP is unreachable.
         validate_redirect_uri(redirect_uri)
         disco = self._get_discovery()
-        return pkce_login_start(
+        login = pkce_login_start(
             disco["authorization_endpoint"], client_id=self._client_id, scope=self._scopes, redirect_uri=redirect_uri)
+        if not self._authorization_params:
+            return login
+        return replace(login, redirect_url=f"{login.redirect_url}&{urllib.parse.urlencode(self._authorization_params)}")
 
     def revoke_session(self, *, refresh_token: str) -> None:
         # Best-effort RFC 7009 revocation when the IDP advertises an endpoint.
@@ -312,6 +323,7 @@ def _settings() -> dict:
     return {
         "issuer": issuer, "client_id": client_id,
         "scopes": setting("HERMES_DASHBOARD_OIDC_SCOPES", "scopes") or _DEFAULT_SCOPES,
+        "authorization_params": oidc_cfg.get("authorization_params"),
         # Credential: canonical home is the env var / ~/.hermes/.env. Empty ⇒ public client.
         "client_secret": setting("HERMES_DASHBOARD_OIDC_CLIENT_SECRET", "client_secret"),
         # Clock-skew tolerance for ID-token exp/nbf/iat (config.yaml only; default 60s, 0 = strict).
