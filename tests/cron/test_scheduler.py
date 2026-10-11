@@ -2130,6 +2130,30 @@ class TestCronDeliveryMirror:
         assert "Cronjob Response:" not in mirrored_text
         assert "To stop or manage this job" not in mirrored_text
 
+    @pytest.mark.parametrize("global_wrap,job_wrap,expect_wrapped", [
+        (True, None, True), (True, False, False), (False, True, True), (False, None, False)])
+    def test_per_job_wrap_response_overrides_global(self, global_wrap, job_wrap, expect_wrapped):
+        from gateway.config import Platform
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+        send = AsyncMock(return_value={"success": True})
+        job = {"id": "j1", "name": "digest", "deliver": "origin",
+               "origin": {"platform": "telegram", "chat_id": "123"}}
+        if job_wrap is not None:
+            job["wrap_response"] = job_wrap
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": global_wrap}}), \
+             patch("tools.send_message_tool._send_to_platform", new=send):
+            assert _deliver_result(job, "body text") is None
+
+        sent = send.call_args[0][3]
+        assert ("Cronjob Response:" in sent) is expect_wrapped
+        assert "body text" in sent
+
     # --- origin-scoping (mirror only into the conversation that created the job) ---
 
     # --- multi-participant parity with send_message (user_id passthrough) ---
