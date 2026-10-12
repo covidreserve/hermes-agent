@@ -734,6 +734,8 @@ class TestSessionIsolation:
         assert (other.source.profile, other.source.user_id) == ("other-profile", "webhook:build")
         assert [adapter._delivery_info[e.source.chat_id]["deliver_extra"]["chat_id"] for e in (high, low, other)] == [
             "high-chat", "low-chat", "other-chat"]
+        # The route name is the stable `platforms.webhook.channel_overrides` key; per-delivery chat_ids never repeat.
+        assert (high.source.parent_chat_id, low.source.parent_chat_id) == ("build", "build:external")
 
 
 # ===================================================================

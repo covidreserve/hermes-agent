@@ -723,8 +723,9 @@ class WebhookAdapter(BasePlatformAdapter):
         self._delivery_info_created[session_chat_id] = now
         self._delivery_info_order.append((now, session_chat_id))
         self._prune_delivery_info(now)
+        # parent_chat_id=route_name lets `platforms.webhook.channel_overrides.<route>` pin a per-route model.
         source = self.build_source(chat_id=session_chat_id, chat_name=f"webhook/{route_name}", chat_type="webhook",
-                                   user_id=f"webhook:{route_name}", user_name=route_name)
+                                   user_id=f"webhook:{route_name}", user_name=route_name, parent_chat_id=route_name)
         if profile and isinstance(profile, str):
             source.profile = profile
         event = MessageEvent(text=prompt, message_type=MessageType.TEXT, source=source, raw_message=payload,
