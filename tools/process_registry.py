@@ -117,7 +117,7 @@ _SYSTEMD_SCOPE_PROBE_TTL_SECONDS = 60.0
 _SYSTEMD_RUN_NO_EXPAND = True
 _MIN_WORKER_MEMORY_MAX_BYTES = 64 * 1024 * 1024
 _DEFAULT_WORKER_MEMORY_MAX_BYTES = 1024 * 1024 * 1024
-_WORKER_MEMORY_MAX_CAP_BYTES = 4 * 1024 * 1024 * 1024
+_WORKER_MEMORY_MAX_CAP_BYTES = 8 * 1024 * 1024 * 1024  # local: next dev + browser exceed 4 GiB in one Kanban worker
 
 
 def _worker_memory_max_bytes() -> int:
