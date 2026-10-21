@@ -261,7 +261,10 @@ class _ThreadContextCache:
     messages: list[dict[str, Any]] = field(default_factory=list)
 
 
-_AGENT_SESSIONS_SUPPORTED: Optional[bool] = None
+# ponytail: Agent Sessions API off — agents.sessions.setStatus wants an enum status (our free text is
+# rejected: invalid_arguments) and agents.sessions.rename returns not_authorized for this app. Back to None
+# (probe) once status maps to the enum and the app is an agent; legacy API retires Feb 2027.
+_AGENT_SESSIONS_SUPPORTED: Optional[bool] = False
 
 
 def _sdk_supports_agent_sessions() -> bool:
