@@ -4206,9 +4206,11 @@ class GatewayRunner(
         overwrite each other). Returns reset tokens for ``_clear_session_env`` in a ``finally``."""
         from gateway.session_context import set_session_vars
         # Async-delivery capability tells async tools whether this channel can wake a later turn. Default
-        # True keeps CLI/unknown paths working; stateless adapters (api_server) declare False.
+        # True keeps CLI/unknown paths working; stateless adapters (api_server) declare False, and a
+        # webhook's per-delivery session ends with the turn, so its continuation has no history.
         _adapter = (getattr(self, "adapters", None) or {}).get(context.source.platform)
-        _async_delivery = getattr(_adapter, "supports_async_delivery", True)
+        _async_delivery = (getattr(_adapter, "supports_async_delivery", True)
+                           and not getattr(_adapter, "session_ends_with_turn", False))
         return set_session_vars(
             platform=context.source.platform.value,
             chat_id=context.source.chat_id,
