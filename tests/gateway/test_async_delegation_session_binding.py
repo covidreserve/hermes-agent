@@ -116,6 +116,22 @@ class TestGatewayPinningFailsClosed:
         )
 
     @pytest.mark.asyncio
+    async def test_delegate_child_completion_never_moves_route_onto_child(self):
+        """A child's background process finishing after its parent's turn ended must reach the
+        chat's current session, not re-pin the route to the child transcript (which would then
+        swallow the parent's own delegation results)."""
+        current = self._entry("sess_route")
+        runner = self._make_runner({
+            "sess_child": {"id": "sess_child", "ended_at": None, "source": "subagent",
+                           "parent_session_id": "sess_parent",
+                           "model_config": '{"_delegate_from": "sess_parent"}'},
+            "sess_parent": {"id": "sess_parent", "ended_at": 1.0, "end_reason": "webhook_complete"},
+        }, switched_entry=self._entry("sess_child"))
+
+        assert await runner._resolve_async_delegation_session(current, "sess_child") is current
+        self._assert_no_route_change(runner)
+
+    @pytest.mark.asyncio
     async def test_non_compression_ended_parent_drops(self):
         current = self._entry("sess_old")
         runner = self._make_runner(

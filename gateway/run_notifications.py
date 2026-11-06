@@ -38,6 +38,9 @@ def _update_failed_notice() -> str:
 # configured at all — no adapter will ever appear — would keep itself on disk and re-log a
 # deferred line on every poll, in every process, forever. Stop waiting past this age.
 _UPDATE_NOTIFY_MAX_ADAPTER_WAIT_SECONDS = 3600.0
+# Bound on the ``model_config._delegate_from`` chain _resolve_async_delegation_session walks; real nesting is
+# bounded far lower by delegation.max_spawn_depth, this only stops a corrupt chain (fail-closed).
+_MAX_DELEGATE_PROVENANCE_HOPS = 16
 
 
 def _served_notice_target_key(profile: Optional[str], platform_value: str, chat_id, thread_id) -> tuple:
@@ -287,6 +290,27 @@ class GatewayNotificationsMixin:
                 "dropping injection (#55578 fail-closed).", pinned_session_id,
             )
             return None
+        # A delegate child's completion (its own background process, a nested batch) belongs to the
+        # session that spawned it: walk ``model_config._delegate_from`` to the human-facing parent and
+        # never switch the route onto a child's execution transcript. Unresolvable provenance drops.
+        from hermes_state_sessions import _parse_model_config
+        for _hop in range(_MAX_DELEGATE_PROVENANCE_HOPS + 1):
+            delegate_from = _parse_model_config(pinned_row.get("model_config")).get("_delegate_from")
+            if delegate_from is None and pinned_row.get("source") != "subagent":
+                break
+            parent_row = None
+            if isinstance(delegate_from, str) and delegate_from.strip() and _hop < _MAX_DELEGATE_PROVENANCE_HOPS:
+                try:
+                    parent_row = await session_db.get_session(delegate_from)
+                except Exception:
+                    logger.debug("Async-delegation delegate parent lookup failed for %s", delegate_from, exc_info=True)
+            if parent_row is None:
+                logger.warning(
+                    "Async-delegation completion pinned to delegate session %s has no resolvable "
+                    "spawning session; dropping injection.", pinned_session_id,
+                )
+                return None
+            pinned_session_id, pinned_row = delegate_from, parent_row
         target_session_id = pinned_session_id
         follows_compression = False
         if pinned_row.get("ended_at"):
