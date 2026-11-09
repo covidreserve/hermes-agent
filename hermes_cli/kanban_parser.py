@@ -204,7 +204,7 @@ _SPECS = [
              help="Provider the --model belongs to (passed as --provider <name> to "
                   "the worker). Requires --model."),
         _arg("--complexity", type=str.upper, choices=list(kb.VALID_COMPLEXITIES),
-             help="Complexity label (S=small/localized, M=multi-file, L=broad/ambiguous). "
+             help="Complexity label (S=small/localized, M=multi-file, L=broad/ambiguous, XL=research/architecture). "
                   "With kanban.routing enabled and no --model pin, the dispatcher picks the "
                   "worker model from this tier's list, skipping rate-limited providers."),
         _arg("--completion-contract", metavar="CONTRACT",

@@ -468,11 +468,12 @@ ESTIMATE_SYSTEM_PROMPT = (
     "kanban task. Given the task title and description, respond with STRICT "
     "JSON only (no prose, no code fence):\n"
     '{"est_tokens": <integer total tokens across the whole run>, '
-    '"complexity": "S"|"M"|"L", '
+    '"complexity": "S"|"M"|"L"|"XL", '
     '"rationale": "<one short sentence>"}\n'
     "Base the token figure on a realistic multi-turn agent run (reading files, "
     "tool calls, edits, retries) — not a single reply. S≈small/localized, "
-    "M≈multi-file, L≈broad or ambiguous. Be honest that this is a rough guess.")
+    "M≈multi-file, L≈broad or ambiguous, XL≈research, architecture or design "
+    "decisions, or decomposing a large task. Be honest that this is a rough guess.")
 
 
 def _cap(s: Optional[str], n: int) -> str:
@@ -523,7 +524,7 @@ def estimate_complexity(title: str, body: Optional[str], *, task_id: Optional[st
         est_tokens = 0
     complexity = str(parsed.get("complexity") or "").strip().upper()
     return {
-        "ok": True, "est_tokens": est_tokens, "complexity": complexity if complexity in ("S", "M", "L") else None,  # XL is hand-set only
+        "ok": True, "est_tokens": est_tokens, "complexity": complexity if complexity in TIER_ORDER else None,
         "rationale": str(parsed.get("rationale") or "").strip() or None, "model": model}
 
 

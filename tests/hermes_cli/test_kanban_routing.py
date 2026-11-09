@@ -557,15 +557,15 @@ def test_kanban_create_tool_accepts_complexity(kanban_home, monkeypatch):
         assert kb.get_task(c, out["task_id"]).complexity == "M"
 
 
-def test_xl_tier_routes_and_is_never_auto_labelled(conn, monkeypatch):
+def test_xl_tier_routes_and_is_auto_labelled(conn, monkeypatch):
     _pool(monkeypatch)
     cfg = _cfg(tiers={**TIERS, "XL": [{"model": "huge-1", "provider": "prov-d"}]})
     d = kr.RoutingContext(conn, cfg).decide(_task(complexity="XL"))
     assert d.source == "tier" and d.tier == "XL" and d.candidate.model == "huge-1"
 
-    # the estimator only labels S/M/L; XL is hand-set
+    # the estimator may label research/architecture work XL
     import agent.auxiliary_client as aux
     from types import SimpleNamespace as NS
     reply = NS(model="m", choices=[NS(message=NS(content='{"est_tokens": 9, "complexity": "XL"}'))])
     monkeypatch.setattr(aux, "call_llm", lambda **k: reply)
-    assert kr.estimate_complexity("t", None, task_id="t_x")["complexity"] is None
+    assert kr.estimate_complexity("t", None, task_id="t_x")["complexity"] == "XL"
