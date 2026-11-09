@@ -46,7 +46,7 @@ from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
-TIER_ORDER = ("S", "M", "L")
+TIER_ORDER = ("S", "M", "L", "XL")
 DEFAULT_COOLDOWN_SECONDS = 900
 VALID_UNLABELED = ("profile", *TIER_ORDER)
 VALID_ON_EXHAUSTED = ("wait", "profile")
@@ -125,7 +125,7 @@ def load_routing_config(kanban_cfg: Optional[dict] = None) -> RoutingConfig:
     for key, entries in (raw_tiers.items() if isinstance(raw_tiers, dict) else ()):
         tier = str(key).strip().upper()
         if tier not in TIER_ORDER:
-            logger.warning("kanban.routing.tiers: unknown tier %r (expected S, M, L)", key)
+            logger.warning("kanban.routing.tiers: unknown tier %r (expected %s)", key, ", ".join(TIER_ORDER))
             continue
         tiers[tier] = _parse_candidates(entries, f"tiers.{tier}")
     unlabeled = str(raw.get("unlabeled") or "profile").strip()
@@ -523,7 +523,7 @@ def estimate_complexity(title: str, body: Optional[str], *, task_id: Optional[st
         est_tokens = 0
     complexity = str(parsed.get("complexity") or "").strip().upper()
     return {
-        "ok": True, "est_tokens": est_tokens, "complexity": complexity if complexity in TIER_ORDER else None,
+        "ok": True, "est_tokens": est_tokens, "complexity": complexity if complexity in ("S", "M", "L") else None,  # XL is hand-set only
         "rationale": str(parsed.get("rationale") or "").strip() or None, "model": model}
 
 

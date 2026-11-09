@@ -94,8 +94,9 @@ def test_normalize_complexity():
     assert kb.normalize_complexity("LARGE") == "L"
     for empty in (None, "", "none", "-", "NULL"):
         assert kb.normalize_complexity(empty) is None
+    assert kb.normalize_complexity("xl") == "XL"
     with pytest.raises(ValueError):
-        kb.normalize_complexity("XL")
+        kb.normalize_complexity("XXL")
 
 
 def test_create_and_set_complexity(conn):
@@ -135,12 +136,12 @@ def test_config_parses_tiers_and_drops_bad_entries():
         "enabled": True, "unlabeled": "m", "on_exhausted": "bogus", "cooldown_seconds": "60",
         "tiers": {
             "s": [{"model": "a", "provider": "p"}, {"provider": "no-model"}, "junk"],
-            "XL": [{"model": "ignored"}],
+            "XXL": [{"model": "ignored"}],
             "L": {"model": "single", "reasoning": "not-a-level"},
         },
     }})
     assert [c.model for c in cfg.tiers["S"]] == ["a"]
-    assert "XL" not in cfg.tiers
+    assert "XXL" not in cfg.tiers
     assert cfg.tiers["L"][0].model == "single" and cfg.tiers["L"][0].reasoning is None
     assert cfg.unlabeled == "M" and cfg.on_exhausted == "wait" and cfg.cooldown_seconds == 60
     assert cfg.review == ()
@@ -529,7 +530,7 @@ def test_cli_create_set_and_route(kanban_home, monkeypatch, capsys):
     assert run("route", tid, "--json") == 0
     out = json.loads(capsys.readouterr().out)
     assert out["enabled"] is True and out["task"]["model"] == "big-1"
-    assert run("set-complexity", tid, "XL") == 2
+    assert run("set-complexity", tid, "XXL") == 2
 
     monkeypatch.setattr(kcli, "_kanban_config", lambda: {"routing": {"enabled": True, "tiers": TIERS,
                                                                     "review": REVIEW}})
@@ -548,9 +549,23 @@ def test_kanban_create_tool_accepts_complexity(kanban_home, monkeypatch):
     from tools import kanban_tools as kt
     from tools.kanban_tools_schemas import KANBAN_CREATE_SCHEMA
 
-    assert KANBAN_CREATE_SCHEMA["parameters"]["properties"]["complexity"]["enum"] == ["S", "M", "L"]
+    assert KANBAN_CREATE_SCHEMA["parameters"]["properties"]["complexity"]["enum"] == ["S", "M", "L", "XL"]
     monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
     out = json.loads(kt._handle_create({"title": "tool card", "assignee": "w", "complexity": "m"}))
     assert out.get("ok") is not False, out
     with kbc.connect_closing() as c:
         assert kb.get_task(c, out["task_id"]).complexity == "M"
+
+
+def test_xl_tier_routes_and_is_never_auto_labelled(conn, monkeypatch):
+    _pool(monkeypatch)
+    cfg = _cfg(tiers={**TIERS, "XL": [{"model": "huge-1", "provider": "prov-d"}]})
+    d = kr.RoutingContext(conn, cfg).decide(_task(complexity="XL"))
+    assert d.source == "tier" and d.tier == "XL" and d.candidate.model == "huge-1"
+
+    # the estimator only labels S/M/L; XL is hand-set
+    import agent.auxiliary_client as aux
+    from types import SimpleNamespace as NS
+    reply = NS(model="m", choices=[NS(message=NS(content='{"est_tokens": 9, "complexity": "XL"}'))])
+    monkeypatch.setattr(aux, "call_llm", lambda **k: reply)
+    assert kr.estimate_complexity("t", None, task_id="t_x")["complexity"] is None

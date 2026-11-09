@@ -115,8 +115,8 @@ BLOCK_RECURRENCE_LIMIT = 2
 VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
 
 # Complexity labels driving ``kanban.routing`` tier selection (S = small/localized,
-# M = multi-file, L = broad or ambiguous); NULL = unlabeled.
-VALID_COMPLEXITIES = ("S", "M", "L")
+# M = multi-file, L = broad or ambiguous, XL = decomposition/unblocking, hand-set); NULL = unlabeled.
+VALID_COMPLEXITIES = ("S", "M", "L", "XL")
 
 
 def normalize_complexity(value: Optional[str]) -> Optional[str]:
