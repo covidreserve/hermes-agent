@@ -130,6 +130,7 @@ def _make_provider(
     scopes: str | None = None,
     client_secret: str | None = None,
     auth_methods: Any = "__unset__",
+    hosted_domain: str | None = None,
 ):
     """Construct a provider with discovery + JWKS stubbed (no network).
 
@@ -143,6 +144,8 @@ def _make_provider(
         kwargs["scopes"] = scopes
     if client_secret is not None:
         kwargs["client_secret"] = client_secret
+    if hosted_domain is not None:
+        kwargs["hosted_domain"] = hosted_domain
     p = oidc_plugin.SelfHostedOIDCProvider(**kwargs)
     # Pre-seed discovery so nothing hits the network.
     disco = dict(_DISCOVERY_DOC)
@@ -713,6 +716,56 @@ class TestVerifySession:
 
 
 
+_WORKSPACE_CLAIMS = {"hd": "rvnway.com", "email_verified": True}
+
+
+class TestHostedDomain:
+    """With a hosted domain configured, only verified accounts of that Google Workspace get a session."""
+
+    @pytest.fixture
+    def provider(self, rsa_keypair):
+        return _make_provider(rsa_keypair, hosted_domain="rvnway.com")
+
+    def test_verified_workspace_account_gets_session(self, provider, rsa_keypair):
+        token = _mint_id_token(rsa_keypair, extra_claims=_WORKSPACE_CLAIMS)
+        assert provider.verify_session(access_token=token).user_id == "usr_abc"
+
+    @pytest.mark.parametrize(
+        "claims",
+        [
+            {"hd": "other.example", "email_verified": True},
+            {"email_verified": True},  # personal Google account: no hd claim
+            {"hd": "rvnway.com", "email_verified": False},
+            {"hd": "rvnway.com"},
+        ],
+        ids=["other-domain", "no-hd", "email-unverified", "email-verified-missing"],
+    )
+    def test_other_accounts_refused(self, provider, rsa_keypair, claims):
+        token = _mint_id_token(rsa_keypair, extra_claims=claims)
+        assert provider.verify_session(access_token=token) is None
+
+    def test_login_with_other_domain_refused(self, provider, rsa_keypair):
+        id_token = _mint_id_token(
+            rsa_keypair, extra_claims={"hd": "other.example", "email_verified": True}
+        )
+        mock_resp = _mock_post(200, {"id_token": id_token, "token_type": "Bearer"})
+        with patch(
+            "plugins.dashboard_auth.self_hosted.httpx.post", return_value=mock_resp
+        ):
+            with pytest.raises(InvalidCodeError):
+                provider.complete_login(
+                    code="abc",
+                    state="s",
+                    code_verifier="vfy",
+                    redirect_uri="https://hermes.example/auth/callback",
+                )
+
+    def test_no_hosted_domain_accepts_any_account(self, rsa_keypair):
+        provider = _make_provider(rsa_keypair)
+        token = _mint_id_token(rsa_keypair)
+        assert provider.verify_session(access_token=token).user_id == "usr_abc"
+
+
 # ---------------------------------------------------------------------------
 # refresh_session + revoke_session
 # ---------------------------------------------------------------------------
@@ -733,6 +786,7 @@ class TestPluginRegister:
             "HERMES_DASHBOARD_OIDC_CLIENT_ID",
             "HERMES_DASHBOARD_OIDC_SCOPES",
             "HERMES_DASHBOARD_OIDC_CLIENT_SECRET",
+            "HERMES_DASHBOARD_OIDC_HOSTED_DOMAIN",
         ):
             monkeypatch.delenv(var, raising=False)
 
@@ -790,6 +844,15 @@ class TestPluginRegister:
         assert params["state"] == [cookie_state]
         assert cookie_state != "forged"
         assert params["code_challenge_method"] == ["S256"]
+
+    def test_configured_hosted_domain_reaches_provider(self, patch_config):
+        patch_config({"self_hosted": {
+            "issuer": _ISSUER, "client_id": _CLIENT_ID, "hosted_domain": "rvnway.com",
+        }})
+        ctx = MagicMock()
+        oidc_plugin.register(ctx)
+        provider = ctx.register_dashboard_auth_provider.call_args.args[0]
+        assert provider._hosted_domain == "rvnway.com"
 
     def test_env_overrides_config(self, patch_config, monkeypatch):
         patch_config(

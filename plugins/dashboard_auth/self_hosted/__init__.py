@@ -5,9 +5,10 @@ endpoints from ``{issuer}/.well-known/openid-configuration``, builds the PKCE (S
 URL, exchanges the code, and verifies the **ID token** (the access token is opaque per spec)
 against the discovered ``jwks_uri`` with ``iss``/``aud`` pinned. Public and confidential
 (``client_secret`` layered on top of PKCE, never replacing it) clients both work. Config:
-``dashboard.oauth.self_hosted.{issuer,client_id,scopes,client_secret,id_token_leeway}`` or
-``HERMES_DASHBOARD_OIDC_*`` (leeway is config.yaml-only; default 60s of clock-skew tolerance
-for the ID token's time claims, ``0`` restores strict verification).
+``dashboard.oauth.self_hosted.{issuer,client_id,scopes,client_secret,hosted_domain,id_token_leeway}``
+or ``HERMES_DASHBOARD_OIDC_*`` (leeway is config.yaml-only; default 60s of clock-skew tolerance
+for the ID token's time claims, ``0`` restores strict verification). With ``hosted_domain`` set
+(Google Workspace), only ID tokens with a matching ``hd`` and ``email_verified: true`` are accepted.
 """
 
 from __future__ import annotations
@@ -18,11 +19,11 @@ import threading
 import time
 import urllib.parse
 from dataclasses import replace
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 import httpx
 
-from hermes_cli.dashboard_auth import LoginStart, ProviderError, Session
+from hermes_cli.dashboard_auth import InvalidCodeError, LoginStart, ProviderError, Session
 from plugins.dashboard_auth._shared import (
     DEFAULT_TOKEN_LEEWAY_SECONDS,
     JSON_HEADERS,
@@ -91,7 +92,7 @@ class SelfHostedOIDCProvider(JwtOAuthProvider):
     def __init__(
         self, *, issuer: str, client_id: str, scopes: str = _DEFAULT_SCOPES, client_secret: str = "",
         id_token_leeway: float = DEFAULT_TOKEN_LEEWAY_SECONDS,
-        authorization_params: Dict[str, str] | None = None,
+        authorization_params: dict[str, str] | None = None, hosted_domain: str = "",
     ) -> None:
         if not issuer:
             raise ValueError("issuer is required")
@@ -115,6 +116,7 @@ class SelfHostedOIDCProvider(JwtOAuthProvider):
         # Empty/whitespace secret ⇒ public client, so a provisioned-but-blank secret
         # can't flip us into a broken confidential mode.
         self._client_secret = (client_secret or "").strip()
+        self._hosted_domain = (hosted_domain or "").strip().lower()
         # Discovery + JWKS resolve lazily so registration never hits the network
         # (the IDP may be down at boot; fail per-request instead).
         self._discovery: dict[str, Any] | None = None
@@ -274,9 +276,14 @@ class SelfHostedOIDCProvider(JwtOAuthProvider):
 
     def _verify_id_token(self, id_token: str) -> dict[str, Any]:
         issuer = self._get_discovery()["issuer"]
-        return verify_jwt(
+        claims = verify_jwt(
             id_token, self._get_jwks_client(), algorithms=list(_ALLOWED_ID_TOKEN_ALGS),
             audience=self._client_id, issuer=issuer, label="ID token", leeway=self._id_token_leeway)
+        if self._hosted_domain and (
+                str(claims.get("hd", "")).lower() != self._hosted_domain or claims.get("email_verified") is not True):
+            # InvalidCodeError: login → 400, verify_session → None (no session for this identity).
+            raise InvalidCodeError(f"ID token is not a verified {self._hosted_domain} account")
+        return claims
 
     _claims_for = _verify_id_token
 
@@ -324,6 +331,7 @@ def _settings() -> dict:
         "issuer": issuer, "client_id": client_id,
         "scopes": setting("HERMES_DASHBOARD_OIDC_SCOPES", "scopes") or _DEFAULT_SCOPES,
         "authorization_params": oidc_cfg.get("authorization_params"),
+        "hosted_domain": setting("HERMES_DASHBOARD_OIDC_HOSTED_DOMAIN", "hosted_domain"),
         # Credential: canonical home is the env var / ~/.hermes/.env. Empty ⇒ public client.
         "client_secret": setting("HERMES_DASHBOARD_OIDC_CLIENT_SECRET", "client_secret"),
         # Clock-skew tolerance for ID-token exp/nbf/iat (config.yaml only; default 60s, 0 = strict).
