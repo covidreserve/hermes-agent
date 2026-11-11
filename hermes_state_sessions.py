@@ -481,8 +481,8 @@ class SessionSessionsMixin:
         self, *, platform: str, chat_id: str, thread_id: Optional[str] = None,
         user_id: Optional[str] = None,
     ) -> Optional[str]:
-        """Most recent live session_id for source + chat_id (+ thread_id). With ``user_id`` exact sender
-        matches win; several distinct users and no match → None (never another participant's session)."""
+        """Most recent live session_id for source + chat_id + thread_id (None = the thread-less session).
+        With ``user_id`` exact sender matches win; several distinct users and no match → None (never another participant's session)."""
         if not platform or chat_id in (None, ""):
             return None
         query = """
@@ -493,9 +493,10 @@ class SessionSessionsMixin:
               AND ended_at IS NULL
         """
         params: list = [platform, str(chat_id)]
-        if thread_id is not None:
-            query += " AND COALESCE(thread_id, '') = ?"
-            params.append(str(thread_id))
+        # A thread-less send is a top-level message: only a thread-less session may take it,
+        # never the newest thread session of the chat.
+        query += " AND COALESCE(thread_id, '') = ?"
+        params.append(str(thread_id or ""))
         rows = [dict(r) for r in self._read_all(query + " ORDER BY started_at DESC", params)]
         if not rows:
             return None

@@ -109,7 +109,7 @@ def _find_session_id(platform: str, chat_id: str, thread_id: Optional[str] = Non
         origin = entry.get("origin") or {}
         return ((origin.get("platform") or entry.get("platform", "")).lower() == platform.lower()
                 and str(origin.get("chat_id", "")) == str(chat_id)
-                and (thread_id is None or str(origin.get("thread_id") or "") == str(thread_id)))
+                and str(origin.get("thread_id") or "") == str(thread_id or ""))
 
     # Keys starting with "_" (e.g. the gateway's "_README") are metadata sentinels.
     candidates = [e for k, e in data.items() if not str(k).startswith("_") and isinstance(e, dict) and _matches(e)]

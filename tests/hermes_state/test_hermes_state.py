@@ -5397,6 +5397,18 @@ def test_find_session_by_origin_matching_rules(db):
     ) is None
 
 
+def test_find_session_by_origin_threadless_lookup_never_matches_thread_sessions(db):
+    for sid, thread in (("dm-a", "100.1"), ("dm-b", "200.2")):
+        db.create_session(
+            sid, "slack", user_id="U1", chat_id="D1", chat_type="dm", thread_id=thread,
+            session_key=f"agent:main:slack:dm:T:D1:{thread}",
+        )
+
+    assert db.find_session_by_origin(
+        platform="slack", chat_id="D1", thread_id=None, user_id="U1"
+    ) is None
+
+
 
 
 
