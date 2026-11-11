@@ -1624,7 +1624,7 @@ def check_respawn_guard(
 
     # 4. GitHub PR URL in a recent comment — prior worker already opened a PR.
     #    Exception: a handoff AFTER the newest PR comment (operator reassign,
-    #    reviewer changes_requested, review reopen) names the profile that must
+    #    reviewer changes_requested, review reopen, unblock) names the profile that must
     #    now work on THAT PR — a closer or the implementer finishing it, not a
     #    duplicate implementation (#111910). A crash/reclaim is not a handoff,
     #    so the worker that opened the PR is still not re-spawned against it.
@@ -1638,11 +1638,13 @@ def check_respawn_guard(
         if not (body and _RESPAWN_GUARD_PR_URL_RE.search(body)):
             continue
         events = conn.execute(
-            # Strictly after: a same-second tie stays guarded (fail closed).
+            # Strictly after: a same-second tie stays guarded (fail closed),
+            # except an unblock: no worker runs on a blocked card, so a PR
+            # link posted in the unblock's second is the operator's go-ahead.
             "SELECT kind, payload FROM task_events "
-            "WHERE task_id = ? AND created_at > ? "
-            "AND kind IN ('assigned', 'changes_requested', 'review_reopened')",
-            (task_id, int(c["created_at"] or 0)),
+            "WHERE task_id = ? AND (created_at > ? OR (kind = 'unblocked' AND created_at = ?)) "
+            "AND kind IN ('assigned', 'changes_requested', 'review_reopened', 'unblocked')",
+            (task_id, int(c["created_at"] or 0), int(c["created_at"] or 0)),
         ).fetchall()
         if any(_is_handoff_event(e["kind"], e["payload"]) for e in events):
             return None

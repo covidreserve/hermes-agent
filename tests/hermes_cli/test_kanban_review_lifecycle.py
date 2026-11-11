@@ -605,6 +605,21 @@ def test_active_pr_guard_lifts_for_implementer_after_changes_requested(
         assert kbd.check_respawn_guard(conn, done_id) == "recent_success"
 
 
+def test_active_pr_guard_lifts_when_unblocked_with_pr_link_in_same_second(
+    kanban_home: Path,
+) -> None:
+    """An operator who links a PR and unblocks in one go has approved the run;
+    a blocked card has no worker, so the same-second comment is the operator's."""
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="gated e2e", assignee="dev", initial_status="blocked")
+        kb.add_comment(
+            conn, tid, author="dev",
+            body="UNBLOCK: review published https://github.com/example/repo/pull/44#pullrequestreview-1",
+        )
+        assert kb.unblock_task(conn, tid) is True
+        assert kbd.check_respawn_guard(conn, tid) is None
+
+
 def test_dispatch_json_exposes_suppression_reasons(
     kanban_home: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
