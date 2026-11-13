@@ -646,6 +646,12 @@ class WebhookAdapter(BasePlatformAdapter):
             raw_body, error_response = await self._read_authenticated_body(request, route_name, route_config)
         if error_response is not None:
             return error_response
+        # A draining gateway refuses new turns after the 202 is sent, silently losing the event. Fail the
+        # delivery before the route script runs so the sender records it and can redeliver it.
+        runner = self.gateway_runner
+        if getattr(runner, "_draining", False) is True or getattr(runner, "_external_drain_active", False) is True:
+            logger.warning("[webhook] refused route=%s: gateway draining", route_name)
+            return _json_error("Gateway is draining; redeliver later", 503)
         # Rate limiting (after auth)
         if not self._record_rate_limit_hit(route_name, time.time()):
             return _json_error("Rate limit exceeded", 429)

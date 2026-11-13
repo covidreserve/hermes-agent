@@ -20,6 +20,7 @@ import hashlib
 import hmac
 import json
 import time
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -574,6 +575,27 @@ class TestIdempotency:
         assert adapter.handle_message.await_count == 2
         sources = {call.args[0].source.user_id for call in adapter.handle_message.await_args_list}
         assert sources == {"webhook:alpha", "webhook:beta"}
+
+    @pytest.mark.asyncio
+    async def test_draining_gateway_fails_delivery_so_it_can_be_redelivered(self):
+        """A draining gateway would drop the turn after a 202; it answers 503 and keeps the delivery ID unused."""
+        routes = {"gh": {"secret": _INSECURE_NO_AUTH, "prompt": "x"}}
+        adapter = _make_adapter(routes=routes)
+        adapter.handle_message = AsyncMock()
+        adapter.gateway_runner = SimpleNamespace(_draining=True, _external_drain_active=False)
+
+        app = _create_app(adapter)
+        headers = {"X-GitHub-Delivery": "during-restart"}
+        async with TestClient(TestServer(app)) as cli:
+            refused = await cli.post("/webhooks/gh", json={"a": 1}, headers=headers)
+            adapter.gateway_runner = SimpleNamespace(_draining=False, _external_drain_active=True)
+            refused_external = await cli.post("/webhooks/gh", json={"a": 1}, headers=headers)
+            adapter.gateway_runner = SimpleNamespace(_draining=False, _external_drain_active=False)
+            redelivered = await cli.post("/webhooks/gh", json={"a": 1}, headers=headers)
+
+        assert (refused.status, refused_external.status, redelivered.status) == (503, 503, 202)
+        await asyncio.sleep(0)
+        assert adapter.handle_message.await_count == 1
 
 
 # ===================================================================
