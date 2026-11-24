@@ -41,7 +41,13 @@ def github(tmp_path, monkeypatch):
                 if state.get("head_change"):
                     state["head"] = "b" * 40
             elif "/statuses" in self.path:
-                value = [[]]
+                value = [state.get("statuses", [])]
+            elif self.path.startswith("/apps/"):
+                app = state.get("apps", {}).get(self.path.removeprefix("/apps/"))
+                if app is None:
+                    self.send_error(404)
+                    return
+                value = {"id": app}
             elif "/pulls/" in self.path:
                 value = {"head": {"sha": sha}, "base": {"ref": "main"}, "state": "open"}
             else:
@@ -60,9 +66,10 @@ def github(tmp_path, monkeypatch):
     shim = tmp_path / "bin"
     shim.mkdir()
     gh = shim / "gh"
-    gh.write_text(f"#!{sys.executable}\nimport sys,urllib.request\n"
+    gh.write_text(f"#!{sys.executable}\nimport sys,urllib.error,urllib.request\n"
                   f"u='http://127.0.0.1:{server.server_port}/'+sys.argv[2]\n"
-                  "print(urllib.request.urlopen(u).read().decode())\n")
+                  "try:\n    print(urllib.request.urlopen(u).read().decode())\n"
+                  "except urllib.error.HTTPError as e:\n    sys.exit(f'gh: Not Found (HTTP {e.code})')\n")
     gh.chmod(0o755)
     monkeypatch.setenv("PATH", str(shim) + os.pathsep + os.environ["PATH"])
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
@@ -109,6 +116,25 @@ def test_pr_completion_requires_current_required_evidence(github):
         local = kb.create_task(conn, title="local", completion_contract="local-only")
         assert kb.complete_task(conn, local, summary="https://github.com/acme/repo/pull/7 is background context")
         assert len(github["requests"]) == before
+
+
+@pytest.mark.platforms("linux")
+def test_status_from_the_pinned_app_satisfies_the_required_check(github):
+    """A required check pinned to an app is satisfied by a commit status that app posted,
+    as GitHub treats it; the same status from another app or a person is not."""
+    def status(creator_profile):
+        return {"id": 7, "context": "required", "state": "success",
+                "creator": {"html_url": creator_profile}, "target_url": "https://example.test"}
+    github.update(missing=True, apps={"pinned-app": 1, "other-app": 2})
+    with connect() as conn:
+        for creator_profile, ok in (("https://github.com/apps/pinned-app", True),
+                                    ("https://github.com/apps/other-app", False),
+                                    ("https://github.com/apps/hidden-app", False),
+                                    ("https://github.com/some-person", False)):
+            github["statuses"] = [status(creator_profile)]
+            tid = kb.create_task(conn, title="status", completion_contract="acme/repo")
+            assert kb.complete_task(conn, tid, result="done",
+                                    metadata={"published_pr": "https://github.com/acme/repo/pull/7"}) is ok
 
 
 @pytest.mark.platforms("linux")

@@ -189,11 +189,13 @@ def collect_acceptance(contract: str, published_pr: str | None,
         statuses = [{**s, "sha": sha} for page in _api(f"repos/{repo}/commits/{sha}/statuses?per_page=100",
                                                        paginate=True, env=env) for s in page]
         outcomes = []
+        status_app_ids: dict[str, int | None] = {}
         for context, app_id in sorted(required, key=str):
             matching = [r for r in runs if r["name"] == context and
                         (app_id in (None, -1) or r["app"]["id"] == app_id)]
-            # A legacy status can satisfy an unpinned context, but never a check pinned to an app.
-            legacy = [s for s in statuses if s["context"] == context] if app_id in (None, -1) else []
+            # A legacy status satisfies an unpinned context, or a pinned one when that app posted it.
+            legacy = [s for s in statuses if s["context"] == context and
+                      (app_id in (None, -1) or _status_app_id(s, env, status_app_ids) == app_id)]
             selected = matching + ([max(legacy, key=lambda s: s["id"])] if legacy else [])
             if not selected:
                 outcomes.append("missing")
@@ -225,6 +227,24 @@ def collect_acceptance(contract: str, published_pr: str | None,
         # Never persist gh stderr (credentials/host details); the failed phase is actionable.
         receipt.update(classification="infra", detail="GitHub acceptance evidence unavailable or incomplete; check gh authentication/API access and retry.")
         return receipt
+
+
+def _status_app_id(status: dict, env: dict[str, str] | None, app_ids: dict[str, int | None]) -> int | None:
+    """App that posted a commit status: an app's statuses are created by its bot user,
+    whose profile is ``https://github.com/apps/<slug>``."""
+    profile = (status.get("creator") or {}).get("html_url") or ""
+    if not profile.startswith(_APP_PROFILE):
+        return None
+    slug = profile[len(_APP_PROFILE):]
+    if slug not in app_ids:
+        try:
+            app_ids[slug] = _api(f"apps/{slug}", env=env)["id"]
+        except _GateAuthError:  # an app this login cannot see is not the pinned one
+            app_ids[slug] = None
+    return app_ids[slug]
+
+
+_APP_PROFILE = "https://github.com/apps/"
 
 
 def _classify(check: dict, sha: str, outcome: str | None, is_run: bool) -> str:
