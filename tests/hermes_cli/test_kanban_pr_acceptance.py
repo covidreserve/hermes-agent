@@ -66,6 +66,8 @@ def github(tmp_path, monkeypatch):
     gh.chmod(0o755)
     monkeypatch.setenv("PATH", str(shim) + os.pathsep + os.environ["PATH"])
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)  # never mint through the host's git credential helper
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
     kb.init_db()
     try:
         yield state
@@ -214,6 +216,40 @@ def test_assignee_without_own_gh_login_never_falls_through_to_ambient_login(tmp_
     captured = json.loads(env_dump.read_text(encoding="utf-8-sig"))
     assert captured["GH_CONFIG_DIR"] == str(assignee_home / "gh")
     assert "GH_TOKEN" not in captured and "GITHUB_TOKEN" not in captured
+
+
+@pytest.mark.platforms("posix")
+def test_profile_without_gh_login_reads_with_its_git_credential(tmp_path, monkeypatch):
+    """A profile that reaches GitHub only through a git credential helper (no GH_TOKEN, no gh
+    login) hands gh that helper's token for the contract repository."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    monkeypatch.delenv("GH_TOKEN", raising=False)
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    monkeypatch.delenv("GH_CONFIG_DIR", raising=False)
+    helper = tmp_path / "git-credential-app"
+    helper.write_text("#!/bin/sh\ncat >/dev/null\nprintf 'username=x-access-token\\npassword=app-token\\n'\n")
+    helper.chmod(0o755)
+    gitconfig = tmp_path / "gitconfig"
+    gitconfig.write_text(f"[credential \"https://github.com\"]\n\thelper = !{helper}\n\tuseHttpPath = true\n")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(gitconfig))
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+
+    env_dump = tmp_path / "gh_env.json"
+    shim = tmp_path / "bin"
+    shim.mkdir()
+    gh = shim / "gh"
+    gh.write_text(f"#!{sys.executable}\nimport json, os, pathlib\n"
+                  f"pathlib.Path({str(env_dump)!r}).write_text(json.dumps(dict(os.environ)), encoding='utf-8')\n"
+                  "print(json.dumps({'data': {'repository': None}}))\n")
+    gh.chmod(0o755)
+    monkeypatch.setenv("PATH", str(shim) + os.pathsep + os.environ["PATH"])
+    kb.init_db()
+    with connect() as conn:
+        tid = kb.create_task(conn, title="as-default", completion_contract="acme/repo", assignee="default")
+        assert not kb.complete_task(conn, tid, result="done",
+                                    metadata={"published_pr": "https://github.com/acme/repo/pull/7"})
+    captured = json.loads(env_dump.read_text(encoding="utf-8"))
+    assert captured["GH_TOKEN"] == "app-token"
 
 
 def test_assigned_card_with_unresolvable_profile_is_auth_not_ambient(tmp_path, monkeypatch):

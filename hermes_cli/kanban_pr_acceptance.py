@@ -11,8 +11,10 @@ org's private repos (#122689).
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
+from collections.abc import Mapping
 from pathlib import Path
 from urllib.parse import quote
 
@@ -29,7 +31,7 @@ def validate_contract(value: str | None) -> str:
 
 
 def _api(endpoint: str, *, query: str | None = None, paginate: bool = False,
-         profile_home: str | None = None):
+         env: dict[str, str] | None = None):
     command = ["gh", "api", endpoint, "--hostname", "github.com"]
     if query is not None:
         command += ["-f", "query=" + query]
@@ -38,7 +40,7 @@ def _api(endpoint: str, *, query: str | None = None, paginate: bool = False,
     try:
         result = subprocess.run(command, stdin=subprocess.DEVNULL, capture_output=True,
                                 text=True, encoding="utf-8", errors="replace", timeout=30,
-                                check=True, env=_gh_env(profile_home))
+                                check=True, env=env)
     except subprocess.CalledProcessError as exc:
         # 401/403/404 = the login cannot see this repository (wrong profile identity
         # or missing grant), not a transient API failure. Persist only the status
@@ -61,7 +63,39 @@ class _GateAuthError(RuntimeError):
     an infrastructure blip to retry."""
 
 
-def _gh_env(profile_home: str | None) -> dict[str, str] | None:
+def _gh_env(profile_home: str | None, repo: str) -> dict[str, str] | None:
+    """Child env for ``gh``: the profile's own login, else the git credential for ``repo``.
+
+    A profile that reaches GitHub only through a git credential helper (e.g. a GitHub App
+    minting hour-long installation tokens) has no ``gh`` login; ``gh`` never consults git
+    helpers, so hand it the helper's token. A routed home without a login of its own is
+    pinned to its own config dir by :func:`_profile_gh_env` and never reaches the helper.
+    """
+    env = _profile_gh_env(profile_home)
+    login_env = os.environ if env is None else env
+    if login_env.keys() & _GH_LOGIN_KEYS:
+        return env
+    # ponytail: helper token overrides a hosts.yml-only `gh auth login`; probe `gh auth token` first if both ever coexist
+    token = _git_credential_token(repo, login_env)
+    return env if token is None else {**login_env, "GH_TOKEN": token}
+
+
+_GH_LOGIN_KEYS = {"GH_TOKEN", "GITHUB_TOKEN", "GH_CONFIG_DIR"}
+
+
+def _git_credential_token(repo: str, env: Mapping[str, str]) -> str | None:
+    request = f"protocol=https\nhost=github.com\npath={repo}.git\n\n"
+    try:
+        result = subprocess.run(["git", "credential", "fill"], input=request, capture_output=True,
+                                text=True, encoding="utf-8", errors="replace", timeout=30, check=True,
+                                env={**env, "GIT_TERMINAL_PROMPT": "0"})
+    except (OSError, subprocess.SubprocessError):
+        return None
+    fields = dict(line.split("=", 1) for line in result.stdout.splitlines() if "=" in line)
+    return fields.get("password") or None
+
+
+def _profile_gh_env(profile_home: str | None) -> dict[str, str] | None:
     """Child env for ``gh``: the card's profile identity when one is resolvable.
 
     The completion boundary runs in the worker (assignee), the CLI, or a
@@ -119,12 +153,13 @@ def collect_acceptance(contract: str, published_pr: str | None,
             receipt["detail"] = "Supply metadata.published_pr matching the persisted completion contract."
             return receipt
         repo, number = match[1], int(match[2])
+        env = _gh_env(profile_home, repo)
         receipt["pr_url"] = url
         owner, name = repo.split("/")
         query = '''{repository(owner:%s,name:%s){pullRequest(number:%d){headRefOid baseRefName state
             baseRef{branchProtectionRule{requiredStatusChecks{context app{databaseId}}}}}}}''' % (
                 json.dumps(owner), json.dumps(name), number)
-        repository = _api("graphql", query=query, profile_home=profile_home)["data"]["repository"]
+        repository = _api("graphql", query=query, env=env)["data"]["repository"]
         if repository is None:
             # A private repo the login cannot read resolves to null, not an error.
             raise _GateAuthError(f"HTTP 404 on graphql {repo}")
@@ -136,7 +171,7 @@ def collect_acceptance(contract: str, published_pr: str | None,
         protection = (pr.get("baseRef") or {}).get("branchProtectionRule") or {}
         required = {(r["context"], (r.get("app") or {}).get("databaseId")) for r in protection.get("requiredStatusChecks", [])}
         rules = _api(f"repos/{repo}/rules/branches/{quote(branch, safe='')}?per_page=100",
-                     paginate=True, profile_home=profile_home)
+                     paginate=True, env=env)
         for page in rules:
             for rule in page:
                 if rule["type"] == "required_status_checks":
@@ -147,12 +182,12 @@ def collect_acceptance(contract: str, published_pr: str | None,
             receipt["detail"] = "No repository-required checks are configured; explicitly use a local-only contract for non-CI tasks."
             return receipt
         pages = _api(f"repos/{repo}/commits/{sha}/check-runs?per_page=100&filter=latest",
-                     paginate=True, profile_home=profile_home)
+                     paginate=True, env=env)
         runs = [run for page in pages for run in page["check_runs"]]
         if len({r["id"] for r in runs}) != pages[0]["total_count"]:
             raise ValueError("Incomplete check-run pagination")
         statuses = [{**s, "sha": sha} for page in _api(f"repos/{repo}/commits/{sha}/statuses?per_page=100",
-                                                       paginate=True, profile_home=profile_home) for s in page]
+                                                       paginate=True, env=env) for s in page]
         outcomes = []
         for context, app_id in sorted(required, key=str):
             matching = [r for r in runs if r["name"] == context and
@@ -173,7 +208,7 @@ def collect_acceptance(contract: str, published_pr: str | None,
                     "head_sha": check.get("head_sha", check.get("sha")),
                     "classification": classification, "conclusion": outcome})
         # Re-read after all pages: old-head successes are never transferable.
-        current = _api(f"repos/{repo}/pulls/{number}", profile_home=profile_home)
+        current = _api(f"repos/{repo}/pulls/{number}", env=env)
         if current["head"]["sha"] != sha or current["base"]["ref"] != branch or (current["state"] == "closed" and not current.get("merged")):
             receipt.update(classification="stale", detail="PR head/base changed while collecting evidence; retry.")
             return receipt
